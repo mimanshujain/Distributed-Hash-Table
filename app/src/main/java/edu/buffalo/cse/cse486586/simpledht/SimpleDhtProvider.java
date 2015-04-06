@@ -45,10 +45,11 @@ public class SimpleDhtProvider extends ContentProvider {
     static final String TAG = SimpleDhtProvider.class.getSimpleName();
     static String myPort = "";
     static String hashedPort = "";
-    static String hashedMaster = "";
+    static String originator = "";
     static ChordLinkedList chord;
     static final String masterJoiner = "11108";
     static final String separator = "---";
+    static final String valSeparator = "##";
     static String next = "";
     static String nextPort = null;
     static String pre = "";
@@ -111,7 +112,11 @@ public class SimpleDhtProvider extends ContentProvider {
     @Override
     public int delete(Uri uri, String selection, String[] selectionArgs) {
         messengerDb = dbHelper.getWritableDatabase();
+        Log.v("Delete at "+myPort, "Key= "+selection);
+        String select = "\"*\"";
+        Log.v(selection.equals(select)+""," Select");
         int num = 0;
+
         if(selection.equals("\"@\"")) {
             num = messengerDb.delete(TABLE_NAME, null, null);
         }
@@ -123,6 +128,10 @@ public class SimpleDhtProvider extends ContentProvider {
             msg[1] = myPort;
             msg[2] = nextPort;
             new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+        }
+        else
+        {
+            num = messengerDb.delete(TABLE_NAME,"key = \'"+selection+"\'",null);
         }
         return num;
     }
@@ -168,7 +177,7 @@ public class SimpleDhtProvider extends ContentProvider {
 //                Uri myUri = ContentUris.withAppendedId(CONTENT_URI, rowId);
 //                getContext().getContentResolver().notifyChange(myUri, null);
                 myMessageMap.put(values.get(KEY_COL).toString(),values.get(VAL_COL).toString());
-                Log.v("insert at "+myPort, values.toString());
+                Log.v(TAG,"insert at "+myPort +" "+ values.toString());
 //                return myUri;
             }
         }
@@ -177,6 +186,7 @@ public class SimpleDhtProvider extends ContentProvider {
     //Looking for the right position for the key
     private synchronized static String lookUpNode(String key, String hashKey, String value)
     {
+        Log.v(TAG,"Inside Lookup for "+key);
         if(nextPort == null && prePort == null)
             return myPort;
 
@@ -185,13 +195,18 @@ public class SimpleDhtProvider extends ContentProvider {
 
         else
         {
-            if(pre.compareTo(hashedPort) > 0 && hashKey.compareTo(pre) > 0)
+            if(pre.compareTo(hashedPort) > 0 && (hashKey.compareTo(pre) > 0 || hashKey.compareTo(hashedPort) < 0)) {
+                Log.v(TAG,"I will keep");
                 return myPort;
-            else if(myPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre) > 0)
+            }
+            else if(hashedPort.compareTo(hashKey) >= 0 && hashKey.compareTo(pre) > 0)
+            {
+                Log.v(TAG,"I will keep");
                 return myPort;
+            }
             else {
-                Log.v("Sending message to "+nextPort, "");
-                    String msgToSend = "looking"+ separator + key + separator + value + separator + myPort + separator + hashKey;
+                Log.v(TAG,"Sending message to "+nextPort);
+                String msgToSend = "looking"+ separator + key + separator + value + separator + myPort + separator + hashKey;
                 String[] msg = new String[3];
                 msg[0] = "looking";
                 msg[1] = nextPort;
@@ -229,96 +244,121 @@ public class SimpleDhtProvider extends ContentProvider {
         Cursor resultCursor = null;
         Log.v("Query at "+myPort, "Key= "+selection);
         String select = "\"*\"";
-        Log.v(selection.equals(select)+""," Select");
+//        Log.v(selection.equals(select)+""," Select");
         if(selection.equals(select))
         {
-            Log.v("1","*");
+//            Log.v("1","*");
             resultCursor = qBuilder.query(messengerDb, projection, null,
                     selectionArgs, null, null, sortOrder);
-            Log.v("2","*");
+            Log.v(TAG,"Count: "+resultCursor.getCount());
             if(nextPort == null && prePort == null)
                 return resultCursor;
             else if(nextPort != null && nextPort.equals(myPort))
                 return resultCursor;
-            Log.v("3","*");
-            if(isRequester && nextPort != null && prePort != null) {
+            Log.v(TAG, "Is he Requester: "+isRequester+"");
+            if(isRequester)
+            {
                 try {
-                    String myMessage = "";
-                    if(resultCursor.getCount() > 0)
-                        myMessage = getCursorValue(resultCursor);
-
-                    String[] msg = new String[4];
-                    msg[0] = "giveAll";
-                    msg[1] = myMessage;
-                    msg[2] = myPort;
-                    msg[3] = nextPort;
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
-
-                    String getAllMsg = queueAll.take();
-                    Log.d("Query All "+myPort,getAllMsg);
-                    //blocking
-                    MatrixCursor mx = new MatrixCursor(new String[]{KEY_COL,VAL_COL},50);
-                    String[] received = getAllMsg.split(separator);
-                    for(String m : received)
-                    {
-                        String[] keyVal = m.split(" ");
-                        mx.addRow(new String[]{keyVal[0],keyVal[1]});
+                    originator = myPort;
+                    MatrixCursor mx = getResults(selection,originator);
+                    mx.moveToLast();
+                    Log.v(TAG,"Before Merging Count "+mx.getCount());
+                    if(resultCursor.getCount() > 0) {
+                        resultCursor.moveToFirst();
+                        String mm = getCursorValue(resultCursor);
+                        String[] received = mm.split(valSeparator);
+                        for (String m : received) {
+                            Log.v(TAG, "Merging my results");
+                            String[] keyVal = m.split(" ");
+                            mx.addRow(new String[]{keyVal[0], keyVal[1]});
+                        }
                     }
-
+                    mx.moveToFirst();
+                    Log.v(TAG,"After Merging Count "+mx.getCount());
                     return mx;
-
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
             }
             else
-                return resultCursor;
+            {
+                if(originator.equals(nextPort))
+                    return resultCursor;
+                else
+                    try {
+                        MatrixCursor mx = getResults(selection,originator);
+                        mx.moveToLast();
+                        Log.v(TAG,"Before Merging Count "+mx.getCount());
+                        if(resultCursor.getCount() > 0) {
+                            resultCursor.moveToFirst();
+                            String mm = getCursorValue(resultCursor);
+                            String[] received = mm.split(valSeparator);
+                            for (String m : received) {
+                                Log.v(TAG,"Merging my results");
+                                String[] keyVal = m.split(" ");
+                                mx.addRow(new String[]{keyVal[0], keyVal[1]});
+                            }
+                        }
+                        Log.v(TAG,"After Merging Count "+mx.getCount());
+                        mx.moveToFirst();
+                        return mx;
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+            }
         }
 //s
         else if(selection.equals("\"@\""))
         {
-            Log.v("Query ",selection);
+            Log.v(TAG,"Query "+selection);
             resultCursor = qBuilder.query(messengerDb, projection, null,
                     selectionArgs, null, null, sortOrder);
+            Log.v(TAG,"Count "+ resultCursor.getCount());
         }
         else {
-            Log.v("Query ",selection);
+            Log.v(TAG,"Query a single key "+selection);
             resultCursor = qBuilder.query(messengerDb, projection, " key = \'" + selection + "\' ",
                     selectionArgs, null, null, sortOrder);
 
             if(resultCursor != null && resultCursor.getCount() <= 0)
             {
                 try {
-                    return getResults(selection);
+                    return getResults(selection,myPort);
                 }
                 catch(InterruptedException e) {
                     e.printStackTrace();
                     }
             }
-
         }
 
 //        Log.v("query", resultCursor.getString(1));
         return resultCursor;
     }
 
-    private Cursor getResults(String selection) throws InterruptedException {
+    private MatrixCursor getResults(String selection, String origin) throws InterruptedException {
+        Log.v(TAG,"Inside GetResults Class");
         Log.v("Sending Query to ",nextPort);
-        String[] msg = new String[3];
+        String[] msg = new String[4];
         msg[0] = "query";
         msg[1] = selection;
         msg[2] = nextPort;
+        msg[3] = origin;
         new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+        Log.v(TAG,"Waiting...");
         String message = queue.take();
-        Log.v("Query Message "+message,"at "+myPort);
+        isRequester = true;
+        Log.v(TAG,"Gotcha Message "+message+" at "+myPort);
         //Blocked here
         MatrixCursor mx = new MatrixCursor(new String[]{KEY_COL,VAL_COL},50);
-        String[] received = message.split(separator);
-        for(String m : received)
-        {
-            String[] keyVal = m.split(" ");
-            mx.addRow(new String[]{keyVal[0],keyVal[1]});
+        if(!message.equals("")) {
+            String[] received = message.split(valSeparator);
+            for (String m : received) {
+                Log.v(TAG, "Merging my results");
+                String[] keyVal = m.split(" ");
+                mx.addRow(new String[]{keyVal[0], keyVal[1]});
+            }
         }
+        Log.v(TAG,"GetResults Count "+mx.getCount());
         return mx;
     }
 
@@ -375,8 +415,8 @@ public class SimpleDhtProvider extends ContentProvider {
             String portToSend = "";
 
             if(params[0].equals("JoinMaster")) {
-                msgToSend = params[0] + separator + myPort;
-                portToSend = masterJoiner;
+                msgToSend = params[0] + separator + params[1];
+                portToSend = params[2];
                 sendMessage(portToSend,msgToSend);
             }
 
@@ -411,7 +451,7 @@ public class SimpleDhtProvider extends ContentProvider {
             }
             else if(params[0].equals("query"))
             {
-                msgToSend = params[0] + separator + params[1] + separator + myPort;
+                msgToSend = params[0] + separator + params[1] + separator + myPort +separator + params[3];
                 portToSend = params[2];
                 sendMessage(portToSend,msgToSend);
             }
@@ -489,8 +529,6 @@ public class SimpleDhtProvider extends ContentProvider {
                     {
                         Log.d(TAG,"JoinMaster "+myPort);
                         String hash = genHash(remotePorts.get(msgs[1]));
-//                        chord.addNode(hash, msgs[1]);
-//                        masterConSet.add(msgs[1]);
 
                         if(nextPort == null && prePort == null)
                         {
@@ -509,10 +547,62 @@ public class SimpleDhtProvider extends ContentProvider {
                             new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
                         }
                         else {
+                            boolean cond1 = (hash.compareTo(hashedPort) > 0 && hash.compareTo(next) < 0);
+                            boolean cond2 = (hashedPort.compareTo(next) > 0 && (hash.compareTo(hashedPort) > 0 || next.compareTo(hash) > 0));
+                            if (cond1 || cond2) {
+                                Log.v("In between ", msgs[1]);
+                                String[] msgToSuc = new String[6];
+                                msgToSuc[0] = "PreNext";
+                                msgToSuc[1] = myPort;//Pre
+                                msgToSuc[2] = hashedPort;
+                                msgToSuc[3] = nextPort;//next
+                                msgToSuc[4] = next;
+                                msgToSuc[5] = msgs[1];
+                                new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
 
-                            publishProgress(new String[]{msgs[1],hash});
+                                String[] msg = new String[4];
+                                msg[0] = "Pre";
+                                msg[1] = msgs[1];
+                                msg[2] = hash;
+                                msg[3] = nextPort;
+                                new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+
+                                next = hash;
+                                nextPort = msgs[1];
+                                Log.v(myPort + " ", "Pre " + prePort + " Next " + nextPort);
+                            } else if ((hash.compareTo(hashedPort) < 0 && hash.compareTo(pre) > 0) ||
+                                    (pre.compareTo(hashedPort) > 0 && (hash.compareTo(pre) > 0 || hash.compareTo(hashedPort) < 0))) {
+                                Log.v("In between ", msgs[1]);
+                                String[] msgToSuc = new String[6];
+                                msgToSuc[0] = "PreNext";
+                                msgToSuc[1] = prePort;//Pre
+                                msgToSuc[2] = pre;
+                                msgToSuc[3] = myPort;//next
+                                msgToSuc[4] = hashedPort;
+                                msgToSuc[5] = msgs[1];
+                                new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
+
+                                String[] msg = new String[4];
+                                msg[0] = "Next";
+                                msg[1] = msgs[1];
+                                msg[2] = hash;
+                                msg[3] = prePort;
+                                new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+
+                                pre = hash;
+                                prePort = msgs[1];
+                                Log.v(myPort + " ", "Pre " + prePort + " Next " + nextPort);
+                            } else {
+                                Log.v("Sending to next ", msgs[1]);
+                                if (!nextPort.equals(masterJoiner)) {
+                                    String[] msg = new String[3];
+                                    msg[0] = "JoinMaster";
+                                    msg[1] = msgs[1];
+                                    msg[2] = nextPort;
+                                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+                                }
+                            }
                         }
-
                     }
                     else if(msgs[0].equals("PreNext"))
                     {
@@ -522,16 +612,12 @@ public class SimpleDhtProvider extends ContentProvider {
                         next = msgs[4];
                         Log.v(myPort+" ","Pre "+prePort+" Next "+nextPort);
                     }
-                    else if(msgs[0].equals("updateNext"))
-                    {
-                        publishProgress(new String[]{msgs[1],msgs[2]});
-                    }
                     else if(msgs[0].equals("Next"))
                     {
                         Log.d("By "+msgs[1],"Next "+myPort);
                         nextPort = msgs[1];
                         next = msgs[2];
-                        Log.v(myPort+" ","Pre "+prePort+" Next "+nextPort);
+                        Log.v(myPort + " ", "Pre " + prePort + " Next " + nextPort);
                     }
 
                     else if(msgs[0].equals("Pre"))
@@ -539,7 +625,7 @@ public class SimpleDhtProvider extends ContentProvider {
                         Log.d("By "+msgs[1],"Pre "+myPort);
                         prePort = msgs[1];
                         pre = msgs[2];
-                        Log.v(myPort+" ",prePort+" "+nextPort);
+                        Log.v(myPort + " ", prePort + " " + nextPort);
                     }
 
                     else if(msgs[0].equals("RequestAck"))
@@ -553,10 +639,11 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     else if(msgs[0].equals("looking"))
                     {
-                        Log.d(myPort," "+msgs[0]+" "+msgs[1]);
+                        Log.d(TAG,"looking Message for "+msgs[1]);
                         String portNum = lookUpNode(msgs[1],msgs[4],msgs[2]);
                         if(portNum.equals(myPort))
                         {
+                            Log.v("I will save ",msgs[1]);
                             ContentValues cv = new ContentValues();
                             cv.put(KEY_COL, msgs[1]);
                             cv.put(VAL_COL, msgs[2]);
@@ -566,30 +653,42 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     else if(msgs[0].equals("query"))
                     {
-                        Log.d(myPort," "+msgs[0]+" "+msgs[1]);
+                        Log.d(TAG,myPort+" "+msgs[0]+" "+msgs[1]);
                         if(mUri == null)
                             mUri = buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
+                        originator = msgs[3];
+                        isRequester = false;
                         publishProgress(new String[]{msgs[0],msgs[1],msgs[2]});
                     }
 
                     else if(msgs[0].equals("queryReply"))
                     {
-                        Log.d(myPort," "+msgs[0]+" "+msgs[1]);
-                        queue.put(msgs[2]);
+                        if(msgs.length > 2) {
+                            Log.d(TAG, "Got a reply Mate " + msgs[2]);
+                            queue.put(msgs[2]);
+                        }
+                        else
+                        {
+                            queue.put("");
+                        }
+//                        publishProgress(new String[]{msgs[0],msgs[1],msgs[2]});
                     }
 
                     else if(msgs[0].equals("giveAll"))
                     {
-                        Log.d(myPort," "+msgs[0]+" "+msgs[1]);
-                        if(msgs[2].equals(myPort))
+                        Log.d(myPort," "+msgs[0]+" Originator: "+msgs[2] +" and myport: "+myPort);
+                        if(msgs[2].equals(myPort)) {
+                            Log.v(TAG,"I received back my Give All");
                             queueAll.put(msgs[1]);
+                        }
 
                         else {
+                            Log.v(TAG,"Give all-I am not the originator");
                             if (mUri == null)
                                 mUri = buildUri("content", "edu.buffalo.cse.cse486586.simpledht.provider");
                             isRequester = false;
                             Cursor resultCursor = query(mUri, null,
-                                    "*", null, null);
+                                    "\"*\"", null, null);
                             isRequester = true;
                             String myMessage = getCursorValue(resultCursor);
                             String[] msg = new String[4];
@@ -603,11 +702,11 @@ public class SimpleDhtProvider extends ContentProvider {
 
                     else if(msgs[0].equals("delete"))
                     {
-                        Log.d(myPort," "+msgs[0]+" "+msgs[1]);
+                        Log.d(TAG,msgs[0]+" "+msgs[1]);
 
                         if(!msgs[1].equals(myPort))
                         {
-                            delete(mUri,"*",null);
+                            delete(mUri,"\"*\"",null);
                             if(!nextPort.equals(msgs[1])) {
                                 String[] msg = new String[3];
                                 msg[0] = "delete";
@@ -616,13 +715,13 @@ public class SimpleDhtProvider extends ContentProvider {
                                 new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
                             }
                         }
-                        queue.put(msgs[2]);
+//                        queue.put(msgs[2]);
                     }
                 }
-
             }
             catch (Exception ex)
             {
+                ex.printStackTrace();
                 Log.v(TAG, "Error in ServerTask::"+ex.getMessage());
             }
             return null;
@@ -634,13 +733,15 @@ public class SimpleDhtProvider extends ContentProvider {
 
             if(values[0].equals("query"))
             {
+                Log.d(TAG,"Publish Query");
                 Cursor resultCursor = query(mUri, null,
                         values[1], null, null);
-                Log.d("Result ",resultCursor.getCount()+"");
+                Log.d(TAG,"Got the Results "+resultCursor.getCount()+"");
                 String message = "";
                 if(resultCursor.getCount() > 0)
                     message = getCursorValue(resultCursor);
-
+                isRequester = true;
+                Log.v(TAG,"Now replying back with "+message);
                 String[] msgToRequester = new String[4];
                 msgToRequester[0] = "queryReply";
                 msgToRequester[1] = values[1];
@@ -649,105 +750,69 @@ public class SimpleDhtProvider extends ContentProvider {
                 new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToRequester);
             }
             else {
-                String hash = values[1];
-                String[] msgs = new String[2];
-                msgs[1] = values[0];
-                if(hash.compareTo(hashedPort) > 0 && hash.compareTo(next) < 0)
-                {
-                    Log.v("In between ",msgs[1]);
-                    String[] msgToSuc = new String[6];
-                    msgToSuc[0] =  "PreNext";
-                    msgToSuc[1] = myPort;//Pre
-                    msgToSuc[2] = hashedPort;
-                    msgToSuc[3] = nextPort;//next
-                    msgToSuc[4] = next;
-                    msgToSuc[5] = msgs[1];
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
+                if (values[0].equals("queryReply")) {
+                    try {
+                        queue.put(values[2]);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
 
-                    String[] msg = new String[4];
-                    msg[0] =  "Pre";
-                    msg[1] = msgs[1];
-                    msg[2] = hash;
-                    msg[3] = nextPort;
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
 
-                    next = hash;
-                    nextPort = msgs[1];
-                    Log.v(myPort+" ","Pre "+prePort+" Next "+nextPort);
+//                else if(pre.compareTo(hashedPort) > 0 && (hash.compareTo(hashedPort) > 0 && hash.compareTo(pre) > 0 || hash.compareTo(hashedPort) < 0 && hash.compareTo(pre) < 0))
+//                {
+//                    String[] msgToSuc = new String[6];
+//                    msgToSuc[0] = "PreNext";
+//                    msgToSuc[1] = nextPort;//Pre
+//                    msgToSuc[2] = next;
+//                    msgToSuc[3] = myPort;//next
+//                    msgToSuc[4] = hashedPort;
+//                    msgToSuc[5] = msgs[1];
+//                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
+//
+//                    String[] msg = new String[4];
+//                    msg[0] = "Next";
+//                    msg[1] = msgs[1];
+//                    msg[2] = hash;
+//                    msg[3] = prePort;
+//                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+//
+//                    pre = hash;
+//                    prePort = msgs[1];
+//                    Log.v(myPort + " ", "Pre " + prePort + " Next " + nextPort);
+//
+//                }
+//                else
+//                {
+//                    String[] msg = new String[4];
+//                    msg[0] =  "updateNext";
+//                    msg[1] = msgs[1];
+//                    msg[2] = hash;
+//                    msg[3] = nextPort;
+//                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
+//                }//
                 }
-                else if(pre.compareTo(hashedPort) < 0 && hash.compareTo(hashedPort) < 0 && hash.compareTo(pre) > 0)
-                {
-                    Log.v("In between ",msgs[1]);
-                    String[] msgToSuc = new String[6];
-                    msgToSuc[0] =  "PreNext";
-                    msgToSuc[1] = prePort;//Pre
-                    msgToSuc[2] = pre;
-                    msgToSuc[3] = myPort;//next
-                    msgToSuc[4] = hashedPort;
-                    msgToSuc[5] = msgs[1];
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
-
-                    String[] msg = new String[4];
-                    msg[0] =  "Next";
-                    msg[1] = msgs[1];
-                    msg[2] = hash;
-                    msg[3] = prePort;
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
-
-                    pre = hash;
-                    prePort = msgs[1];
-                    Log.v(myPort+" ","Pre "+prePort+" Next "+nextPort);
-                }
-                else if(pre.compareTo(hashedPort) > 0 && (hash.compareTo(hashedPort) > 0 && hash.compareTo(pre) > 0 || hash.compareTo(hashedPort) < 0 && hash.compareTo(pre) < 0))
-                {
-                    String[] msgToSuc = new String[6];
-                    msgToSuc[0] = "PreNext";
-                    msgToSuc[1] = nextPort;//Pre
-                    msgToSuc[2] = next;
-                    msgToSuc[3] = myPort;//next
-                    msgToSuc[4] = hashedPort;
-                    msgToSuc[5] = msgs[1];
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msgToSuc);
-
-                    String[] msg = new String[4];
-                    msg[0] = "Next";
-                    msg[1] = msgs[1];
-                    msg[2] = hash;
-                    msg[3] = prePort;
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
-
-                    pre = hash;
-                    prePort = msgs[1];
-                    Log.v(myPort + " ", "Pre " + prePort + " Next " + nextPort);
-
-                }
-                else
-                {
-                    String[] msg = new String[4];
-                    msg[0] =  "updateNext";
-                    msg[1] = msgs[1];
-                    msg[2] = hash;
-                    msg[3] = nextPort;
-                    new ClientTask().executeOnExecutor(SimpleDhtProvider.myPool, msg);
-                }//
             }
         }
     }
 
     private String getCursorValue(Cursor resultCursor) {
-        StringBuilder sb = new StringBuilder();
+        Log.v(TAG,"Converting to String");
+//        StringBuilder sb = new StringBuilder();
         resultCursor.moveToFirst();
         int valueIndex = resultCursor.getColumnIndex(VAL_COL);
         int keyIndex = resultCursor.getColumnIndex(KEY_COL);
-
+        String result = "";
         boolean isLast = true;
-        while(isLast)
+        while(resultCursor.getCount() > 0 && isLast)
         {
             String newKey = resultCursor.getString(keyIndex);
             String newValue = resultCursor.getString(valueIndex);
-            sb.append(newKey+" "+newValue+separator);
+//            Log.v(TAG,"Appending "+newKey+" "+newValue);
+//            sb.append(newKey+" "+newValue+separator);
+            result = result+newKey+" "+newValue+valSeparator;
             isLast = resultCursor.moveToNext();
         }
-        return sb.toString();
+        Log.v(TAG,"Final Building: "+result);
+        return result;
     }
 }

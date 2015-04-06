@@ -46,9 +46,10 @@ public class SimpleDhtActivity extends Activity {
             Log.v(TAG, "Server Socket creation Error");
         }
         if(!myPort.equals("11108")) {
-            String[] message = new String[2];
+            String[] message = new String[3];
             message[0] = "JoinMaster";
             message[1] = myPort;
+            message[2] = "11108";
             ClientTask obj = new ClientTask();
             obj.executeOnExecutor(SimpleDhtProvider.myPool, message);
         }
