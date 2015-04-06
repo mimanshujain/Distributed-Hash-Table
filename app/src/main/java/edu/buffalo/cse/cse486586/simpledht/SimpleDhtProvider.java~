@@ -753,6 +753,8 @@ public class SimpleDhtProvider extends ContentProvider {
         {
             String newKey = resultCursor.getString(keyIndex);
             String newValue = resultCursor.getString(valueIndex);
+//            Log.v(TAG,"Appending "+newKey+" "+newValue);
+//            sb.append(newKey+" "+newValue+separator);
             result = result+newKey+" "+newValue+valSeparator;
             isLast = resultCursor.moveToNext();
         }
